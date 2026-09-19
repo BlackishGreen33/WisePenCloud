@@ -16,7 +16,7 @@ import com.oriole.wisepen.user.mapper.UserTaskRecordMapper;
 import com.oriole.wisepen.user.service.IMessageService;
 import com.oriole.wisepen.user.service.IUserTaskService;
 import com.oriole.wisepen.user.service.IWalletService;
-import com.oriole.wisepen.user.task.UserTaskHandler;
+import com.oriole.wisepen.user.service.task.UserTaskHandler;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;

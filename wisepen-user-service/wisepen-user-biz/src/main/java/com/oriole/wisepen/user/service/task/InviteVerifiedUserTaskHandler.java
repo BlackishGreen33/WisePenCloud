@@ -1,4 +1,4 @@
-package com.oriole.wisepen.user.task;
+package com.oriole.wisepen.user.service.task;
 
 import com.oriole.wisepen.user.api.config.UserTaskProperties;
 import com.oriole.wisepen.user.api.domain.dto.req.MessagePublishRequest;

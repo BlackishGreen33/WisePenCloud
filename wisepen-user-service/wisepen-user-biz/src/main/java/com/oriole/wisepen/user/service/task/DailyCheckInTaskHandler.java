@@ -1,4 +1,4 @@
-package com.oriole.wisepen.user.task;
+package com.oriole.wisepen.user.service.task;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.oriole.wisepen.user.api.config.UserTaskProperties;
