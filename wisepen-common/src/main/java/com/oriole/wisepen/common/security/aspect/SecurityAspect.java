@@ -1,5 +1,6 @@
 package com.oriole.wisepen.common.security.aspect;
 
+import com.oriole.wisepen.common.config.WisepenSecurityProperties;
 import com.oriole.wisepen.common.core.context.SecurityContextHolder;
 import com.oriole.wisepen.common.core.domain.enums.IdentityType;
 import com.oriole.wisepen.common.core.domain.enums.UserStatus;
@@ -19,6 +20,12 @@ import java.util.Arrays;
 @Aspect
 @Component
 public class SecurityAspect {
+
+    private final WisepenSecurityProperties securityProperties;
+
+    public SecurityAspect(WisepenSecurityProperties securityProperties) {
+        this.securityProperties = securityProperties;
+    }
 
     /**
      * 拦截所有打了 @CheckLogin 或 @CheckRole 注解的方法或类
@@ -55,9 +62,10 @@ public class SecurityAspect {
                 Integer userStatus = SecurityContextHolder.getUserStatus();
                 if (userStatus == null) throw new PermissionException(PermissionError.UNAUTHORIZED);
                 if (UserStatus.UNIDENTIFIED.getCode() == userStatus) {
-                    throw new PermissionException(PermissionError.ACCOUNT_UNIDENTIFIED);
-                }
-                if (UserStatus.NORMAL.getCode() != userStatus) {
+                    if (!securityProperties.isAllowUnidentified()) {
+                        throw new PermissionException(PermissionError.ACCOUNT_UNIDENTIFIED);
+                    }
+                } else if (UserStatus.NORMAL.getCode() != userStatus) {
                     throw new PermissionException(PermissionError.UNAUTHORIZED);
                 }
             }
