@@ -2,7 +2,7 @@ package com.oriole.wisepen.extension.fudan.consumer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.microsoft.playwright.*;
-import com.microsoft.playwright.options.WaitForSelectorState;
+import com.microsoft.playwright.options.LoadState;
 import com.oriole.wisepen.extension.fudan.constant.MqTopicConstants;
 import com.oriole.wisepen.extension.fudan.domain.dto.FudanUISTaskResultDTO;
 import com.oriole.wisepen.extension.fudan.domain.mq.FudanUISAuthRequestMessage;
@@ -82,21 +82,22 @@ public class UISAuthRequestConsumer {
             log.debug("uis auth task changed. userId={} from=PENDING to=WAITING_SCAN", uid);
 
             try {
-                page.locator(".card-body .table td").first().waitFor(new Locator.WaitForOptions()
-                        .setState(WaitForSelectorState.VISIBLE).setTimeout(120_000));
+                page.waitForURL(Pattern.compile(".*my\\.fudan\\.edu\\.cn.*"),
+                        new Page.WaitForURLOptions().setTimeout(120_000));
+
+                page.waitForLoadState(LoadState.NETWORKIDLE);
+                Map<String, String> infoMap = parseStudentInfo(page);
+                infoMap.put("学号", account);
+
+                FudanUISTaskResultDTO successDto = FudanUISTaskResultDTO.of(FudanUISTaskState.SUCCESS);
+                successDto.setProfile(infoMap);
+                redisCacheManager.setUisTaskStatus(uid, successDto);
+                log.info("uis auth task changed. userId={} from=WAITING_SCAN to=SUCCESS", uid);
+
             } catch (TimeoutError e) {
                 redisCacheManager.setUisTaskStatus(uid, FudanUISTaskResultDTO.of(FudanUISTaskState.FAILED_TIMEOUT));
-                log.error("uis auth task changed. userId={} from=WAITING_SCAN to=FAILED_TIMEOUT reason=\"scan timeout\"", uid, e);
-                return;
+                log.error("uis auth task changed. userId={} from=WAITING_SCAN to=FAILED_TIMEOUT", uid, e);
             }
-
-            Map<String, String> infoMap = parseStudentInfo(page);
-            infoMap.put("学号", account);
-
-            FudanUISTaskResultDTO successDto = FudanUISTaskResultDTO.of(FudanUISTaskState.SUCCESS);
-            successDto.setProfile(infoMap);
-            redisCacheManager.setUisTaskStatus(uid, successDto);
-            log.info("uis auth task changed. userId={} from=WAITING_SCAN to=SUCCESS", uid);
 
         } catch (Exception e) {
             redisCacheManager.setUisTaskStatus(uid, FudanUISTaskResultDTO.of(FudanUISTaskState.FAILED_ERROR));
