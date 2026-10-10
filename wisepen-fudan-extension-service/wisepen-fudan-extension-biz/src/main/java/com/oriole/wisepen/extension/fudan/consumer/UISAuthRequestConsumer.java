@@ -33,7 +33,7 @@ public class UISAuthRequestConsumer {
     private final ObjectMapper objectMapper;
 
     @KafkaListener(topics = MqTopicConstants.FUDAN_UIS_AUTH_REQ,
-            groupId = "wisepen-extension-fudan-uis-auth-group", properties = "max.poll.records=1")
+            groupId = "wisepen-extension-fudan-uis-auth-group", concurrency = "5", properties = "max.poll.records=1")
     @AsyncListener(operation = @AsyncOperation(
             channelName = MqTopicConstants.FUDAN_UIS_AUTH_REQ,
             description = "消费复旦 UIS 认证请求，驱动浏览器完成 UIS 登录流程并把任务状态写入 Redis。",
