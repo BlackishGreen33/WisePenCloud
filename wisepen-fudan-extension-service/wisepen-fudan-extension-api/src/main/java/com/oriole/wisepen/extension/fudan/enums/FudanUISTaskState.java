@@ -8,6 +8,7 @@ import lombok.Getter;
 @Getter
 @AllArgsConstructor
 public enum FudanUISTaskState {
+    QUEUED(3, "QUEUED"), // 排队中
     PENDING(0, "PENDING"), // 处理中
     WAITING_SCAN(2, "WAITING_SCAN"), // 等待用户扫码
     SUCCESS(1, "SUCCESS"), // 成功

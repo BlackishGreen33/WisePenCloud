@@ -20,10 +20,10 @@ public class RedisCacheManager {
 	private final ObjectMapper objectMapper;
 
 	private static final String REDIS_FUDAN_UIS_TASK_PREFIX = "wisepen:extension:fudan:uis:task:";
-	private static final long TASK_EXPIRE_MINUTES = 5L;
+	private static final long TASK_EXPIRE_MINUTES = 30L;
 
 	/**
-	 * 设置 UIS 认证任务状态及结果 (5分钟有效)
+	 * 设置 UIS 认证任务状态及结果 (30分钟有效)
 	 */
 	public void setUisTaskStatus(Long uid, FudanUISTaskResultDTO dto) {
 		String key = REDIS_FUDAN_UIS_TASK_PREFIX + uid;

@@ -12,7 +12,8 @@ import lombok.Getter;
 @AllArgsConstructor
 public enum FudanExtensionError implements IResult {
 
-    UIS_TASK_NOT_FOUND(99111, new ResultKey(BusinessDomain.FUDAN_EXTENSION, FudanExtensionSubject.UIS, ErrorReason.NOT_FOUND), "任务不存在");
+    UIS_TASK_NOT_FOUND(99111, new ResultKey(BusinessDomain.FUDAN_EXTENSION, FudanExtensionSubject.UIS, ErrorReason.NOT_FOUND), "任务不存在"),
+    UIS_TASK_SUBMIT_FAILED(99112, new ResultKey(BusinessDomain.FUDAN_EXTENSION, FudanExtensionSubject.UIS, ErrorReason.FAILED), "UIS 认证任务提交失败");
 
     private final Integer code;
     private final ResultKey key;

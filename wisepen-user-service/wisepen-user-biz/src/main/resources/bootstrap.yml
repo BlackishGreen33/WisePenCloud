@@ -74,4 +74,4 @@ springwolf:
     info:
       title: 用户服务 Kafka Events
       version: 1.0.0
-      description: Token 计费与复旦 UIS 认证请求相关 Kafka 消息契约
+      description: Token 计费与用户任务完成相关 Kafka 消息契约

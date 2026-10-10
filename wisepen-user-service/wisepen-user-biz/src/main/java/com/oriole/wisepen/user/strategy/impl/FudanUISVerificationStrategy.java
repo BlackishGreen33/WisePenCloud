@@ -7,7 +7,7 @@ import com.oriole.wisepen.common.core.domain.enums.IdentityType;
 import com.oriole.wisepen.common.core.domain.enums.UserStatus;
 import com.oriole.wisepen.common.core.exception.ServiceException;
 import com.oriole.wisepen.extension.fudan.domain.dto.FudanUISTaskResultDTO;
-import com.oriole.wisepen.extension.fudan.domain.mq.FudanUISAuthRequestMessage;
+import com.oriole.wisepen.extension.fudan.domain.dto.req.FudanUISAuthSubmitRequest;
 import com.oriole.wisepen.extension.fudan.enums.FudanUISTaskState;
 import com.oriole.wisepen.extension.fudan.feign.RemoteFudanExtensionService;
 import com.oriole.wisepen.user.api.domain.dto.VerificationResultDTO;
@@ -70,12 +70,16 @@ public class FudanUISVerificationStrategy implements UserVerificationStrategy {
         String uisAccount = (String) payload.get("uisAccount");
         String uisPassword = (String) payload.get("uisPassword");
 
-        FudanUISAuthRequestMessage message = FudanUISAuthRequestMessage.builder()
+        FudanUISAuthSubmitRequest request = FudanUISAuthSubmitRequest.builder()
                 .userId(userId)
                 .account(uisAccount)
                 .password(uisPassword)
                 .build();
-        kafkaUserEventPublisher.publishUisAuthRequest(userId, message);
+
+        R<Void> submitted = remoteFudanExtensionService.submitTask(request);
+        if (submitted == null || !Integer.valueOf(200).equals(submitted.getCode())) {
+            throw new ServiceException(UserError.VERIFICATION_FUDAN_UIS_REQUEST_FAILED);
+        }
     }
 
     @Override
@@ -94,7 +98,8 @@ public class FudanUISVerificationStrategy implements UserVerificationStrategy {
         }
         FudanUISTaskResultDTO dto = res.getData();
 
-        if (dto.getState() == FudanUISTaskState.PENDING.getCode()) {
+        if (dto.getState() == FudanUISTaskState.QUEUED.getCode()
+                || dto.getState() == FudanUISTaskState.PENDING.getCode()) {
             return VerificationResultDTO.pending();
         }
 
