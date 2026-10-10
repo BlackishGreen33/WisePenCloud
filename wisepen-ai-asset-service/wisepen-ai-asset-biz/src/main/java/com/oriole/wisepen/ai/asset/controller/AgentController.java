@@ -162,8 +162,8 @@ public class AgentController {
                     - 用途：查询智能体资产指定版本或当前已发布版本的运行配置与文件快照。
                     - 请求：resourceId 指定智能体资产；version 为空时使用智能体主档当前发布版本。
                     - 约束：当前用户必须是资源所有者；智能体资产和目标版本必须存在。
-                    - 处理：读取版本、运行配置 spec 及资产文件列表；草稿有待上传候选时，查询存储记录并补偿已成功但消息尚未消费的上传；未完成的候选不替换原文件；不改变发布状态。
-                    - 失败：未登录 -> PermissionError.NOT_LOGIN；当前用户不是资源所有者 -> AIResourceError.AI_RESOURCE_PERMISSION_DENIED；资源不存在 -> AIResourceError.AI_RESOURCE_NOT_FOUND；版本不存在 -> AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND。
+                    - 处理：读取版本、运行配置 spec 及资产文件列表；草稿有待上传候选时，批量查询存储状态，补偿已成功但消息尚未消费的上传，移除存储端已删除或不存在的候选；仍在上传的候选保留且不替换原文件，查询失败直接报错；不改变发布状态。
+                    - 失败：未登录 -> PermissionError.NOT_LOGIN；当前用户不是资源所有者 -> AIResourceError.AI_RESOURCE_PERMISSION_DENIED；资源不存在 -> AIResourceError.AI_RESOURCE_NOT_FOUND；版本不存在 -> AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND；待上传文件存储状态查询失败 -> CommonError.INTERNAL_ERROR。
                     - 响应：返回智能体版本包信息、运行配置和资产文件元数据。
                     """
     )
@@ -180,8 +180,8 @@ public class AgentController {
                     - 用途：将智能体资产的当前草稿版本确认为正式发布版本。
                     - 请求：resourceId 指定智能体资产。
                     - 约束：当前用户必须是资源所有者；待发布版本须为 DRAFT，或上次发布中断后尚未推进主档的 PUBLISHED 版本；系统提示词不能为空；不能残留待上传候选。
-                    - 处理：先补偿已成功上传并确认无待上传候选，再按修订号冻结版本；确保下一版草稿存在后推进主档版本号；中断后重试继续完成，不覆盖已有下一版草稿。
-                    - 失败：未登录 -> PermissionError.NOT_LOGIN；当前用户不是资源所有者 -> AIResourceError.AI_RESOURCE_PERMISSION_DENIED；资源不存在 -> AIResourceError.AI_RESOURCE_NOT_FOUND；版本不存在 -> AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND；版本不是草稿 -> AIResourceError.CANNOT_OPERATE_NON_DRAFT_AI_RESOURCE_VERSION；系统提示词为空 -> AIResourceError.AI_RESOURCE_CORE_ASSET_NOT_FOUND；存在上传中的资产 -> AIResourceError.AI_RESOURCE_ASSET_NOT_READY。
+                    - 处理：先补偿已成功上传并清除存储端已失效候选，确认无待上传候选，再按修订号冻结版本；确保下一版草稿存在后推进主档版本号；中断后重试继续完成，不覆盖已有下一版草稿。
+                    - 失败：未登录 -> PermissionError.NOT_LOGIN；当前用户不是资源所有者 -> AIResourceError.AI_RESOURCE_PERMISSION_DENIED；资源不存在 -> AIResourceError.AI_RESOURCE_NOT_FOUND；版本不存在 -> AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND；版本不是草稿 -> AIResourceError.CANNOT_OPERATE_NON_DRAFT_AI_RESOURCE_VERSION；系统提示词为空 -> AIResourceError.AI_RESOURCE_CORE_ASSET_NOT_FOUND；存在上传中的资产 -> AIResourceError.AI_RESOURCE_ASSET_NOT_READY；待上传文件存储状态查询失败 -> CommonError.INTERNAL_ERROR。
                     - 响应：成功时返回空结果。
                     """
     )

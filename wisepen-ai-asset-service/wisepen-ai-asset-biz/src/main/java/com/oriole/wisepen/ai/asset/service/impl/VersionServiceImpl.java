@@ -17,12 +17,14 @@ import com.oriole.wisepen.ai.asset.repository.AIResourceBaseRepository;
 import com.oriole.wisepen.ai.asset.repository.VersionBundleBaseRepository;
 import com.oriole.wisepen.ai.asset.service.IVersionService;
 import com.oriole.wisepen.common.core.exception.ServiceException;
+import com.oriole.wisepen.common.core.constant.CommonError;
 import com.oriole.wisepen.file.storage.api.domain.dto.CopyReqDTO;
 import com.oriole.wisepen.file.storage.api.domain.dto.StorageRecordDTO;
 import com.oriole.wisepen.file.storage.api.domain.dto.UploadInitReqDTO;
 import com.oriole.wisepen.file.storage.api.domain.dto.UploadInitRespDTO;
 import com.oriole.wisepen.file.storage.api.domain.mq.FileUploadedMessage;
 import com.oriole.wisepen.file.storage.api.enums.StorageSceneEnum;
+import com.oriole.wisepen.file.storage.api.enums.StorageStatusEnum;
 import com.oriole.wisepen.file.storage.api.feign.RemoteStorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,6 +36,7 @@ import org.springframework.util.StringUtils;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Slf4j
@@ -152,18 +155,29 @@ public abstract class VersionServiceImpl<VT extends VersionBundleBaseEntity<VT>,
         VT bundle = versionBundleBaseRepository.findByResourceIdAndVersion(resourceId, version)
                 .orElseThrow(() -> new ServiceException(AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND));
         if (bundle.getStatus() == VersionStatus.DRAFT && bundle.getPendingAssets() != null && !bundle.getPendingAssets().isEmpty()) {
-            // PUT 返回成功可能早于 MQ 消费。仅检查尚未确认的候选，复用存储服务已有的补偿契约。
+            // 旧查单接口会把上传中和不存在都返回 null，不能用它判断候选失效。
+            var response = remoteStorageService.getUploadRecords(bundle.getPendingAssets().stream()
+                    .map(AssetInfoBase::getObjectKey).toList());
+            if (response == null || !Objects.equals(response.getCode(), 200) || response.getData() == null
+                    || response.getData().stream().anyMatch(record -> record.getStatus() == null)) {
+                throw new ServiceException(CommonError.INTERNAL_ERROR);
+            }
+            Map<String, StorageRecordDTO> records = response.getData().stream()
+                    .collect(Collectors.toMap(StorageRecordDTO::getObjectKey, record -> record));
+            List<String> expiredKeys = new ArrayList<>();
             for (AssetInfoBase pending : bundle.getPendingAssets()) {
-                try {
-                    StorageRecordDTO stored = remoteStorageService.getFileRecord(pending.getObjectKey()).getData();
-                    if (stored != null) {
-                        handleFileUploaded(FileUploadedMessage.builder().scene(getStorageScene())
-                                .objectKey(pending.getObjectKey()).size(stored.getSize()).build());
-                    }
-                } catch (Exception e) {
-                    log.warn("AI resource pending asset check failed. resourceId={} version={} objectKey={}",
-                            resourceId, version, pending.getObjectKey(), e);
+                StorageRecordDTO stored = records.get(pending.getObjectKey());
+                if (stored == null || stored.getStatus() == StorageStatusEnum.DELETED) {
+                    expiredKeys.add(pending.getObjectKey());
+                } else if (stored.getStatus() == StorageStatusEnum.AVAILABLE) {
+                    handleFileUploaded(FileUploadedMessage.builder().scene(getStorageScene())
+                            .objectKey(pending.getObjectKey()).size(stored.getSize()).build());
                 }
+            }
+            if (!expiredKeys.isEmpty()) {
+                // 只取消本次查到的失效对象；并发完成或同名重试后的文件不受影响。
+                cancelUploadAssets(AssetUploadCancelRequest.builder().resourceId(resourceId).draftVersion(version)
+                        .objectKeys(expiredKeys).build());
             }
             return versionBundleBaseRepository.findByResourceIdAndVersion(resourceId, version)
                     .orElseThrow(() -> new ServiceException(AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND));

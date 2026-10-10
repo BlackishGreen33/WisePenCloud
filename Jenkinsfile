@@ -83,8 +83,8 @@ pipeline {
                         echo "开始进行 Java 微服务 Maven 构建..."
                         // 赋予 maven wrapper 执行权限
                         sh 'chmod +x ./mvnw'
-                        // 多模块统一编译打包，跳过测试，开启单核多线程编译加快速度
-                        sh './mvnw clean package -Dmaven.test.skip=true -T 1C'
+                        // 多模块统一测试并打包，按 CPU 核数并行编译
+                        sh './mvnw clean package -T 1C'
                         sh '''
                         echo "开始整理构建产物..."
                         # 遍历所有服务模块

@@ -23,6 +23,8 @@ import com.oriole.wisepen.common.core.domain.R;
 import com.oriole.wisepen.common.core.exception.ServiceException;
 import com.oriole.wisepen.file.storage.api.domain.mq.FileUploadedMessage;
 import com.oriole.wisepen.file.storage.api.enums.StorageSceneEnum;
+import com.oriole.wisepen.file.storage.api.enums.StorageStatusEnum;
+import com.oriole.wisepen.common.core.constant.CommonError;
 import com.oriole.wisepen.file.storage.api.domain.dto.UploadInitRespDTO;
 import com.oriole.wisepen.file.storage.api.domain.dto.StorageRecordDTO;
 import com.oriole.wisepen.file.storage.api.feign.RemoteStorageService;
@@ -33,6 +35,10 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import org.bson.Document;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.repository.support.MongoRepositoryFactory;
@@ -42,7 +48,7 @@ import org.springframework.data.mongodb.core.convert.NoOpDbRefResolver;
 import org.springframework.data.mongodb.core.mapping.MongoMappingContext;
 
 /** 运行真实 Service，只替换数据库、存储服务和消息发布边界。 */
-public class VersionServiceUploadCheck {
+public class VersionServiceUploadTest {
     private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
     private final Map<Integer, SkillVersionBundleEntity> versions = new HashMap<>();
     private final List<String> deleted = new ArrayList<>();
@@ -52,6 +58,10 @@ public class VersionServiceUploadCheck {
     private boolean failSecondInit;
     private boolean failDraftInsert;
     private boolean failVersionUpdate;
+    private boolean failStorageRead;
+    private boolean failStorageEnvelope;
+    private final Set<String> missingObjects = new HashSet<>();
+    private final Set<String> deletedObjects = new HashSet<>();
     private final Set<String> storedObjects = new HashSet<>();
     private Runnable concurrentWrite;
 
@@ -113,9 +123,15 @@ public class VersionServiceUploadCheck {
                 throw new AssertionError("Unexpected resource call: " + method.getName());
             });
     private final RemoteStorageService storage = proxy(RemoteStorageService.class, (object, method, args) -> {
-        if (method.getName().equals("getFileRecord")) {
-            return R.ok(storedObjects.contains(args[0])
-                    ? StorageRecordDTO.builder().objectKey((String) args[0]).size(8L).build() : null);
+        if (method.getName().equals("getUploadRecords")) {
+            if (failStorageRead) throw new IllegalStateException("injected storage lookup failure");
+            if (failStorageEnvelope) return R.fail(CommonError.INTERNAL_ERROR);
+            return R.ok(((List<?>) args[0]).stream().map(String.class::cast)
+                    .filter(key -> !missingObjects.contains(key))
+                    .map(key -> StorageRecordDTO.builder().objectKey(key).size(8L)
+                            .status(deletedObjects.contains(key) ? StorageStatusEnum.DELETED
+                                    : storedObjects.contains(key) ? StorageStatusEnum.AVAILABLE : StorageStatusEnum.UPLOADING)
+                            .build()).toList());
         }
         if (method.getName().equals("initUpload")) {
             if (failSecondInit && sequence == 1) throw new IllegalStateException("injected storage failure");
@@ -133,7 +149,7 @@ public class VersionServiceUploadCheck {
                 }
             });
 
-    private VersionServiceUploadCheck() {
+    VersionServiceUploadTest() {
         versions.put(1, SkillVersionBundleEntity.builder().id("draft").resourceId("skill").version(1)
                 .status(VersionStatus.DRAFT).assets(new ArrayList<>(List.of(AssetInfoBase.builder()
                         .id("existing").name("SKILL.md").path("/").objectKey("old-body")
@@ -191,8 +207,9 @@ public class VersionServiceUploadCheck {
         }
     }
 
-    public static void main(String[] args) {
-        VersionServiceUploadCheck failed = new VersionServiceUploadCheck();
+    @Test
+    void preservesFilesAcrossUploadFailuresAndPublication() {
+        VersionServiceUploadTest failed = new VersionServiceUploadTest();
         MongoMappingContext context = new MongoMappingContext();
         context.setSimpleTypeHolder(MongoCustomConversions.create(adapter -> {}).getSimpleTypeHolder());
         MappingMongoConverter converter = new MappingMongoConverter(NoOpDbRefResolver.INSTANCE, context);
@@ -218,7 +235,7 @@ public class VersionServiceUploadCheck {
         check(failed.versions.get(2).getPendingAssets() == null, "新草稿不继承待上传项");
         rejects(() -> failed.cancel("new-1"));
 
-        VersionServiceUploadCheck success = new VersionServiceUploadCheck();
+        VersionServiceUploadTest success = new VersionServiceUploadTest();
         success.init();
         success.uploaded("new-1", false);
         success.cancel("new-1");
@@ -227,7 +244,7 @@ public class VersionServiceUploadCheck {
         check(success.deleted.contains("old-body") && !success.deleted.contains("new-1"), "仅回收失去引用的旧对象");
         check("existing".equals(success.versions.get(1).getAssets().getFirst().getId()), "覆盖后保留文件 ID");
 
-        VersionServiceUploadCheck retry = new VersionServiceUploadCheck();
+        VersionServiceUploadTest retry = new VersionServiceUploadTest();
         retry.init();
         retry.init();
         retry.cancel("new-1");
@@ -236,7 +253,7 @@ public class VersionServiceUploadCheck {
         retry.uploaded("new-2", false);
         check("new-2".equals(retry.activeKey()) && !retry.deleted.contains("new-2"), "重试成功保留新内容");
 
-        VersionServiceUploadCheck shared = new VersionServiceUploadCheck();
+        VersionServiceUploadTest shared = new VersionServiceUploadTest();
         SkillVersionBundleEntity published = shared.copy(shared.versions.get(1));
         published.setStatus(VersionStatus.PUBLISHED);
         published.setVersion(0);
@@ -246,7 +263,7 @@ public class VersionServiceUploadCheck {
         shared.uploaded("new-1", false);
         check(!shared.deleted.contains("old-body"), "已发布版本引用的旧对象不得删除");
 
-        VersionServiceUploadCheck removed = new VersionServiceUploadCheck();
+        VersionServiceUploadTest removed = new VersionServiceUploadTest();
         removed.init();
         removed.service.deleteAssets(AssetDeleteRequest.builder().resourceId("skill").draftVersion(1)
                 .assetIds(List.of("existing")).build());
@@ -254,7 +271,7 @@ public class VersionServiceUploadCheck {
         check(removed.versions.get(1).getAssets().isEmpty() && removed.versions.get(1).getPendingAssets().isEmpty(),
                 "主动删除必须同时移除原文件和候选，迟到回调不能复活文件");
 
-        VersionServiceUploadCheck concurrent = new VersionServiceUploadCheck();
+        VersionServiceUploadTest concurrent = new VersionServiceUploadTest();
         concurrent.init("SKILL.md", "notes.md");
         concurrent.concurrentWrite = () -> concurrent.uploaded("new-2", false);
         concurrent.uploaded("new-1", false);
@@ -262,24 +279,24 @@ public class VersionServiceUploadCheck {
                 && concurrent.versions.get(1).getPendingAssets().isEmpty(), "并发回调不能丢掉其他文件");
         check("new-1".equals(concurrent.activeKey()), "冲突后重新读取并提交当前候选");
 
-        VersionServiceUploadCheck cancelFirst = new VersionServiceUploadCheck();
+        VersionServiceUploadTest cancelFirst = new VersionServiceUploadTest();
         cancelFirst.init();
         cancelFirst.concurrentWrite = () -> cancelFirst.cancel("new-1");
         cancelFirst.uploaded("new-1", false);
         check("old-body".equals(cancelFirst.activeKey()), "取消先提交时，冲突重试的回调不得复活候选");
-        VersionServiceUploadCheck callbackFirst = new VersionServiceUploadCheck();
+        VersionServiceUploadTest callbackFirst = new VersionServiceUploadTest();
         callbackFirst.init();
         callbackFirst.concurrentWrite = () -> callbackFirst.uploaded("new-1", false);
         callbackFirst.cancel("new-1");
         check("new-1".equals(callbackFirst.activeKey()) && !callbackFirst.deleted.contains("new-1"),
                 "回调先提交时，冲突重试的取消不得删除成功文件");
 
-        VersionServiceUploadCheck publishing = new VersionServiceUploadCheck();
+        VersionServiceUploadTest publishing = new VersionServiceUploadTest();
         publishing.concurrentWrite = publishing::init;
         rejects(() -> publishing.service.publishVersion("skill"));
         check(publishing.versions.get(1).getStatus() == VersionStatus.DRAFT, "并发初始化上传后不能发布旧快照");
 
-        VersionServiceUploadCheck delayed = new VersionServiceUploadCheck();
+        VersionServiceUploadTest delayed = new VersionServiceUploadTest();
         delayed.init();
         delayed.storedObjects.add("new-1");
         check("new-1".equals(delayed.service.getVersionBundle("skill", 1).getAssets().getFirst().getObjectKey()),
@@ -287,14 +304,14 @@ public class VersionServiceUploadCheck {
         delayed.uploaded("new-1", false);
         check(!delayed.deleted.contains("new-1"), "补偿后重复回调不得删除已提交正文");
 
-        VersionServiceUploadCheck delayedPublish = new VersionServiceUploadCheck();
+        VersionServiceUploadTest delayedPublish = new VersionServiceUploadTest();
         delayedPublish.init();
         delayedPublish.storedObjects.add("new-1");
         delayedPublish.service.publishVersion("skill");
         check("new-1".equals(delayedPublish.activeKey()), "立即发布也必须确认尚未消费的成功上传");
 
         for (boolean failInsert : List.of(true, false)) {
-            VersionServiceUploadCheck interrupted = new VersionServiceUploadCheck();
+            VersionServiceUploadTest interrupted = new VersionServiceUploadTest();
             interrupted.failDraftInsert = failInsert;
             interrupted.failVersionUpdate = !failInsert;
             try {
@@ -315,35 +332,88 @@ public class VersionServiceUploadCheck {
                     "重复创建下一草稿不得覆盖用户已保存的内容");
         }
 
-        VersionServiceUploadCheck flash = new VersionServiceUploadCheck();
+        VersionServiceUploadTest flash = new VersionServiceUploadTest();
         flash.flash = true;
         flash.init();
         check("new-1".equals(flash.activeKey()) && !flash.deleted.contains("new-1"), "秒传消息早于登记时不得误删");
         check(flash.versions.get(1).getPendingAssets().isEmpty(), "秒传立即提交且不残留候选");
 
-        VersionServiceUploadCheck failedInit = new VersionServiceUploadCheck();
+        VersionServiceUploadTest failedInit = new VersionServiceUploadTest();
         failedInit.flash = true;
         failedInit.failSecondInit = true;
         rejects(() -> failedInit.init("SKILL.md", "notes.md"));
         check("old-body".equals(failedInit.activeKey()) && failedInit.deleted.contains("new-1")
                 && !failedInit.deleted.contains("old-body"), "批次申请失败只回收未登记候选，不改变旧正文");
 
-        VersionServiceUploadCheck legacy = new VersionServiceUploadCheck();
+        VersionServiceUploadTest legacy = new VersionServiceUploadTest();
         legacy.versions.get(1).getAssets().getFirst().setUploadStatus(AssetUploadStatus.UPLOADING);
         legacy.uploaded("old-body", false);
         check(legacy.versions.get(1).getAssets().getFirst().getUploadStatus() == AssetUploadStatus.AVAILABLE,
                 "兼容升级前已登记的上传及缺少 revision 的旧文档");
 
-        VersionServiceUploadCheck deletedResource = new VersionServiceUploadCheck();
+        VersionServiceUploadTest deletedResource = new VersionServiceUploadTest();
         deletedResource.init();
         deletedResource.service.deleteAllVersionsByResourceIds(List.of("skill"));
         check(deletedResource.deleted.containsAll(List.of("old-body", "new-1")), "删除资源同时回收活动和候选对象");
         System.out.println("PASS: upload preservation, cancellation, retries, callbacks, publication and deletion");
-        if (args.length > 0) checkMongo(args[0]);
     }
 
-    /** 可选传入本地 Mongo URI；只创建并清理本次随机命名的隔离数据库。 */
-    private static void checkMongo(String uri) {
+    @Test
+    void releasesAbandonedUploadAfterStorageCleanup() {
+        init("SKILL.md", "discarded.md");
+        rejects(() -> service.publishVersion("skill"));
+        check(versions.get(1).getPendingAssets().size() == 2, "仍在上传的候选必须保留");
+        missingObjects.add("new-1");
+        deletedObjects.add("new-2");
+        // 模拟取消请求丢失，随后储存服务已清理失败记录；旧正文仍应允许发布。
+        service.publishVersion("skill");
+        check(versions.get(1).getPendingAssets().isEmpty(), "已清理的候选不应永久阻止发布");
+        check("old-body".equals(activeKey()) && !deleted.contains("old-body"), "清理候选保留旧正文");
+    }
+
+    @Test
+    void propagatesStorageFailureWithoutChangingFiles() {
+        init();
+        failStorageRead = true;
+        assertThrows(IllegalStateException.class, () -> service.getVersionBundle("skill", 1));
+        check("old-body".equals(activeKey()) && versions.get(1).getPendingAssets().size() == 1,
+                "存储查询异常不能被当成文件不存在");
+    }
+
+    @Test
+    void rejectsFailedStorageEnvelopeWithoutCancellingUploads() {
+        init();
+        failStorageEnvelope = true;
+        assertThrows(ServiceException.class, () -> service.getVersionBundle("skill", 1));
+        check(versions.get(1).getPendingAssets().size() == 1 && deleted.isEmpty(),
+                "失败响应的空 data 不能被当成已清理文件");
+    }
+
+    @Test
+    void cleanupDoesNotCancelConcurrentRetryOrCompletedUpload() {
+        init();
+        missingObjects.add("new-1");
+        concurrentWrite = this::init;
+        var recovered = service.getVersionBundle("skill", 1);
+        check(recovered.getPendingAssets().size() == 1
+                        && "new-2".equals(recovered.getPendingAssets().getFirst().getObjectKey()),
+                "清理旧对象不能取消并发的同名重试");
+        check("old-body".equals(activeKey()) && !deleted.contains("new-2"), "重试完成前仍保留旧正文");
+
+        VersionServiceUploadTest completed = new VersionServiceUploadTest();
+        completed.init();
+        completed.missingObjects.add("new-1");
+        completed.concurrentWrite = () -> completed.uploaded("new-1", false);
+        completed.service.getVersionBundle("skill", 1);
+        check("new-1".equals(completed.activeKey()) && !completed.deleted.contains("new-1"),
+                "清理前已经提交的成功文件不能被删除");
+    }
+
+    /** 通过系统属性传入 Mongo URI；只创建并清理本次随机命名的隔离数据库。 */
+    @Test
+    void verifiesMongoRepositories() {
+        String uri = System.getProperty("wisepen.test.mongoUri");
+        Assumptions.assumeTrue(uri != null && !uri.isBlank(), "未配置隔离 MongoDB");
         try (var client = MongoClients.create(uri)) {
             MongoTemplate mongo = new MongoTemplate(client, "wisepen_upload_check_" + UUID.randomUUID().toString().replace("-", ""));
             try {
@@ -351,7 +421,7 @@ public class VersionServiceUploadCheck {
                 var bundles = factory.getRepository(SkillVersionBundleRepository.class);
                 var resources = factory.getRepository(SkillRepository.class);
                 var agents = factory.getRepository(AgentVersionBundleRepository.class);
-                VersionServiceUploadCheck boundaries = new VersionServiceUploadCheck();
+                VersionServiceUploadTest boundaries = new VersionServiceUploadTest();
                 String resourceId = new ObjectId().toHexString();
                 resources.insert(SkillEntity.builder().resourceId(resourceId).version(0).build());
                 SkillVersionBundleEntity initial = boundaries.copy(boundaries.versions.get(1));
