@@ -45,6 +45,7 @@ public abstract class VersionServiceImpl<VT extends VersionBundleBaseEntity<VT>,
 
     private static final String ROOT_PATH = "/";
     private static final int MAX_DRAFT_UPDATE_ATTEMPTS = 16;
+    private static final int MAX_STORAGE_STATUS_BATCH_SIZE = 100;
 
     final VersionBundleBaseRepository<VT> versionBundleBaseRepository;
     final AIResourceBaseRepository<AT> aiResourceBaseRepository;
@@ -152,37 +153,8 @@ public abstract class VersionServiceImpl<VT extends VersionBundleBaseEntity<VT>,
                     .orElseThrow(() -> new ServiceException(AIResourceError.AI_RESOURCE_NOT_FOUND));
             version = entity.getVersion();
         }
-        VT bundle = versionBundleBaseRepository.findByResourceIdAndVersion(resourceId, version)
+        return versionBundleBaseRepository.findByResourceIdAndVersion(resourceId, version)
                 .orElseThrow(() -> new ServiceException(AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND));
-        if (bundle.getStatus() == VersionStatus.DRAFT && bundle.getPendingAssets() != null && !bundle.getPendingAssets().isEmpty()) {
-            // 旧查单接口会把上传中和不存在都返回 null，不能用它判断候选失效。
-            var response = remoteStorageService.getUploadRecords(bundle.getPendingAssets().stream()
-                    .map(AssetInfoBase::getObjectKey).toList());
-            if (response == null || !Objects.equals(response.getCode(), 200) || response.getData() == null
-                    || response.getData().stream().anyMatch(record -> record.getStatus() == null)) {
-                throw new ServiceException(CommonError.INTERNAL_ERROR);
-            }
-            Map<String, StorageRecordDTO> records = response.getData().stream()
-                    .collect(Collectors.toMap(StorageRecordDTO::getObjectKey, record -> record));
-            List<String> expiredKeys = new ArrayList<>();
-            for (AssetInfoBase pending : bundle.getPendingAssets()) {
-                StorageRecordDTO stored = records.get(pending.getObjectKey());
-                if (stored == null || stored.getStatus() == StorageStatusEnum.DELETED) {
-                    expiredKeys.add(pending.getObjectKey());
-                } else if (stored.getStatus() == StorageStatusEnum.AVAILABLE) {
-                    handleFileUploaded(FileUploadedMessage.builder().scene(getStorageScene())
-                            .objectKey(pending.getObjectKey()).size(stored.getSize()).build());
-                }
-            }
-            if (!expiredKeys.isEmpty()) {
-                // 只取消本次查到的失效对象；并发完成或同名重试后的文件不受影响。
-                cancelUploadAssets(AssetUploadCancelRequest.builder().resourceId(resourceId).draftVersion(version)
-                        .objectKeys(expiredKeys).build());
-            }
-            return versionBundleBaseRepository.findByResourceIdAndVersion(resourceId, version)
-                    .orElseThrow(() -> new ServiceException(AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND));
-        }
-        return bundle;
     }
 
     @Override
@@ -347,6 +319,52 @@ public abstract class VersionServiceImpl<VT extends VersionBundleBaseEntity<VT>,
         eventPublisher.publishFileDeleteEvent(deletableObjectKeys);
     }
 
+    private void reconcileDraftUploadStatuses(String resourceId, Integer version) {
+        VT draft = versionBundleBaseRepository.findByResourceIdAndVersion(resourceId, version)
+                .orElseThrow(() -> new ServiceException(AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND));
+        if (draft.getStatus() != VersionStatus.DRAFT) return;
+
+        Set<String> uploadingKeys = new LinkedHashSet<>();
+        if (draft.getPendingAssets() != null) {
+            draft.getPendingAssets().forEach(asset -> uploadingKeys.add(asset.getObjectKey()));
+        }
+        if (draft.getAssets() != null) {
+            draft.getAssets().stream().filter(asset -> asset.getUploadStatus() == AssetUploadStatus.UPLOADING)
+                    .forEach(asset -> uploadingKeys.add(asset.getObjectKey()));
+        }
+        if (uploadingKeys.isEmpty()) return;
+
+        List<String> objectKeys = new ArrayList<>(uploadingKeys);
+        Map<String, StorageRecordDTO> records = new HashMap<>();
+        for (int start = 0; start < objectKeys.size(); start += MAX_STORAGE_STATUS_BATCH_SIZE) {
+            List<String> batch = objectKeys.subList(start,
+                    Math.min(start + MAX_STORAGE_STATUS_BATCH_SIZE, objectKeys.size()));
+            var response = remoteStorageService.getUploadRecords(batch);
+            if (response == null || !Objects.equals(response.getCode(), 200) || response.getData() == null
+                    || response.getData().stream().anyMatch(record -> record.getStatus() == null)) {
+                throw new ServiceException(CommonError.INTERNAL_ERROR);
+            }
+            response.getData().forEach(record -> records.put(record.getObjectKey(), record));
+        }
+        Set<String> expiredKeys = new HashSet<>();
+        for (String objectKey : uploadingKeys) {
+            StorageRecordDTO stored = records.get(objectKey);
+            if (stored == null || stored.getStatus() == StorageStatusEnum.DELETED) {
+                expiredKeys.add(objectKey);
+            } else if (stored.getStatus() == StorageStatusEnum.AVAILABLE) {
+                handleFileUploaded(FileUploadedMessage.builder().scene(getStorageScene())
+                        .objectKey(objectKey).size(stored.getSize()).build());
+            }
+        }
+        if (!expiredKeys.isEmpty()) {
+            updateDraftAssets(resourceId, version, current -> {
+                current.getPendingAssets().removeIf(asset -> expiredKeys.contains(asset.getObjectKey()));
+                current.getAssets().removeIf(asset -> asset.getUploadStatus() == AssetUploadStatus.UPLOADING
+                        && expiredKeys.contains(asset.getObjectKey()));
+            });
+        }
+    }
+
     @Override
     @Transactional
     public void publishVersion(String resourceId) {
@@ -354,6 +372,7 @@ public abstract class VersionServiceImpl<VT extends VersionBundleBaseEntity<VT>,
                 .orElseThrow(() -> new ServiceException(AIResourceError.AI_RESOURCE_NOT_FOUND));
 
         int draftVersion = resourceEntity.getVersion() + 1;
+        reconcileDraftUploadStatuses(resourceId, draftVersion);
         for (int attempt = 0; attempt < MAX_DRAFT_UPDATE_ATTEMPTS; attempt++) {
             VT draft = getVersionBundle(resourceId, draftVersion);
             // 上次可能已冻结版本，但尚未创建下一草稿或推进主版本号；重试继续完成。
@@ -389,7 +408,7 @@ public abstract class VersionServiceImpl<VT extends VersionBundleBaseEntity<VT>,
         VT versionBundle = versionBundleBaseRepository.findFirstByAssetObjectKey(msg.getObjectKey()).orElse(null);
         if (versionBundle == null) {
             // 上传事件可能早于版本映射落库；不能把已成功上传的对象误判为孤儿并删除。
-            // 后续读取草稿时会通过 getUploadRecords 补偿状态，存储 GC 负责最终清理真正的孤儿对象。
+            // 发布前会通过 getUploadRecords 补偿状态，存储 GC 负责最终清理真正的孤儿对象。
             log.warn("AI resource asset upload callback arrived before version mapping. objectKey={}", msg.getObjectKey());
             return;
         }

@@ -155,8 +155,8 @@ public class SkillController {
                     - 用途：查询技能资产指定版本或当前已发布版本的文件快照。
                     - 请求：resourceId 指定技能资产；version 为空时使用技能主档当前发布版本。
                     - 约束：当前用户必须拥有目标资源 VIEW 动作；技能资产和目标版本必须存在。
-                    - 处理：读取版本及资产文件列表；草稿有待上传候选时，批量查询存储状态，补偿已成功但消息尚未消费的上传，移除存储端已删除或不存在的候选；仍在上传的候选保留且不替换原文件，查询失败直接报错；不改变发布状态。
-                    - 失败：未登录 -> PermissionError.NOT_LOGIN；资源无查看权限 -> AIResourceError.AI_RESOURCE_PERMISSION_DENIED；技能不存在 -> AIResourceError.AI_RESOURCE_NOT_FOUND；版本不存在 -> AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND；待上传文件存储状态查询失败 -> CommonError.INTERNAL_ERROR。
+                    - 处理：读取版本及资产文件列表；不查询存储状态、不改变草稿或发布状态。
+                    - 失败：未登录 -> PermissionError.NOT_LOGIN；资源无查看权限 -> AIResourceError.AI_RESOURCE_PERMISSION_DENIED；技能不存在 -> AIResourceError.AI_RESOURCE_NOT_FOUND；版本不存在 -> AIResourceError.AI_RESOURCE_VERSION_NOT_FOUND。
                     - 响应：返回技能版本包信息和资产文件元数据。
                     """
     )

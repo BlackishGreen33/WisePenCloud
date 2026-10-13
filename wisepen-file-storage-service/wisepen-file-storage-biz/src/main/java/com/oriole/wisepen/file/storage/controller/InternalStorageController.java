@@ -12,6 +12,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
@@ -146,7 +147,8 @@ public class InternalStorageController {
                     """
     )
     @PostMapping("/getUploadRecords")
-    public R<List<StorageRecordDTO>> getUploadRecords(@Validated @RequestBody @NotEmpty List<@NotBlank String> objectKeys) {
+    public R<List<StorageRecordDTO>> getUploadRecords(
+            @Validated @RequestBody @NotEmpty @Size(max = 100) List<@NotBlank String> objectKeys) {
         return R.ok(storageService.getUploadRecords(objectKeys));
     }
 }
