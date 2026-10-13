@@ -388,11 +388,9 @@ public abstract class VersionServiceImpl<VT extends VersionBundleBaseEntity<VT>,
 
         VT versionBundle = versionBundleBaseRepository.findFirstByAssetObjectKey(msg.getObjectKey()).orElse(null);
         if (versionBundle == null) {
-            // 秒传消息可能先于初始化请求落库；此时不能回收刚分配的对象。
-            if (Boolean.TRUE.equals(msg.getFlashUploaded())) return;
-            // 未找到对应的版本，删除文件
-            eventPublisher.publishFileDeleteEvent(List.of(msg.getObjectKey()));
-            log.warn("AI resource asset upload compensated for missing version. objectKey={}", msg.getObjectKey());
+            // 上传事件可能早于版本映射落库；不能把已成功上传的对象误判为孤儿并删除。
+            // 后续读取草稿时会通过 getUploadRecords 补偿状态，存储 GC 负责最终清理真正的孤儿对象。
+            log.warn("AI resource asset upload callback arrived before version mapping. objectKey={}", msg.getObjectKey());
             return;
         }
         if (versionBundle.getStatus() != VersionStatus.DRAFT) return;

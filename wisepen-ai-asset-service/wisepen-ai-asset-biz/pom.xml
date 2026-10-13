@@ -13,6 +13,11 @@
 
     <dependencies>
         <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>com.oriole</groupId>
             <artifactId>wisepen-ai-asset-api</artifactId>
             <version>${project.version}</version>
